@@ -218,6 +218,8 @@
         drgDesc: get(parts, "IDRG_DRG_DESCRIPTION"),
         masukRaw: get(parts, "ADMISSION_DATE"),
         pulangRaw: get(parts, "DISCHARGE_DATE"),
+        masuk: parseTanggal(get(parts, "ADMISSION_DATE")),
+        pulang: parseTanggal(get(parts, "DISCHARGE_DATE")),
       });
     }
     return { format: "mix", header, claims, count: claims.length };
@@ -343,15 +345,71 @@
       const p = parseMix(textOrAoA);
       if (p.error) return p;
       const c = cekMix(p.claims);
-      return { format: "mix", judul: [], header: p.header, count: p.count, ...c };
+      return { format: "mix", judul: [], header: p.header, count: p.count, claims: p.claims, ...c };
     }
     const p = parseRekap(textOrAoA);
     if (p.error) return p;
     const c = cekRekap(p.claims);
-    return { format: "rekap", judul: p.judul, header: p.header, count: p.count, ...c };
+    return { format: "rekap", judul: p.judul, header: p.header, count: p.count, claims: p.claims, ...c };
   }
 
-  const KG = { VERSION: "0.2.0", parseTanggal, parseRekap, parseMix, cekRekap, cekMix, proses, tglStr, cariICD, icdInfo, saranSpesifik };
+  // ============ MULTI-FILE: dedupe & readmisi lintas file ============
+  function prosesMulti(inputs) {
+    const files = [];
+    for (const inp of inputs) {
+      const r = proses(inp.data, inp.name);
+      files.push({
+        name: inp.name, error: r.error || null, format: r.format,
+        judul: r.judul || [], header: r.header || [], count: r.count || 0,
+        results: r.results || [], summary: r.summary || null, claims: r.claims || [],
+      });
+    }
+    const all = [];
+    for (const f of files) {
+      if (f.error) continue;
+      for (const c of f.claims) { c._file = f.name; all.push(c); }
+    }
+    // dedupe lintas-file (SEP muncul >1 file ATAU >1 baris)
+    const sepMap = {};
+    for (const c of all) if (c.sep) (sepMap[c.sep] = sepMap[c.sep] || []).push(c);
+    const dedupe = [];
+    for (const sep in sepMap) {
+      const arr = sepMap[sep];
+      const fset = new Set(arr.map(c => c._file));
+      if (fset.size > 1 || arr.length > 1) {
+        dedupe.push({ sep, count: arr.length, files: [...fset], nama: arr[0].nama || "", inacbg: arr[0].inacbg || "", jenis: arr[0].jenis || "" });
+      }
+    }
+    // readmisi <=30 hari (khusus RAWAT INAP — RJ kontrol ulang itu wajar)
+    const byRm = {};
+    for (const c of all) {
+      const rm = String(c.rm || "").trim();
+      if (!rm || !c.masuk) continue;
+      if (String(c.jenis || "").toUpperCase() !== "RI") continue;
+      (byRm[rm] = byRm[rm] || []).push(c);
+    }
+    const readmisi = [];
+    for (const rm in byRm) {
+      const arr = byRm[rm].sort((a, b) => a.masuk - b.masuk);
+      for (let i = 0; i < arr.length - 1; i++) {
+        const prev = arr[i], cur = arr[i + 1];
+        if (prev.sep && prev.sep === cur.sep) continue;
+        const ref = prev.pulang || prev.masuk;
+        const gap = Math.round((cur.masuk - ref) / 86400000);
+        if (gap >= 0 && gap <= 30) {
+          readmisi.push({ rm, nama: cur.nama || prev.nama || "", sepAwal: prev.sep, sepUlang: cur.sep, gap, tglAwal: tglStr(ref), tglUlang: tglStr(cur.masuk), fileAwal: prev._file, fileUlang: cur._file });
+        }
+      }
+    }
+    const lintas = {
+      dedupe, readmisi,
+      dedupeCount: dedupe.length, readmisiCount: readmisi.length,
+      totalFile: files.filter(f => !f.error).length,
+    };
+    return { files, lintas };
+  }
+
+  const KG = { VERSION: "0.3.0", parseTanggal, parseRekap, parseMix, cekRekap, cekMix, proses, prosesMulti, tglStr, cariICD, icdInfo, saranSpesifik };
 
   if (typeof module !== "undefined" && module.exports) module.exports = KG;
   global.KG = KG;
