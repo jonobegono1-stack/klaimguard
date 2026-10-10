@@ -48,6 +48,12 @@
   .tag.merah{background:#ffe4e2;color:var(--merah)}.tag.kuning{background:#fff1d6;color:var(--kuning)}
   .mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11.5px}
   .empty{padding:40px;text-align:center;color:var(--muted)}
+  .icdbox{margin-top:22px;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:14px 16px}
+  .icdtitle{font-size:12.5px;font-weight:600;margin-bottom:8px;color:var(--muted)}
+  .icdout{margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:4px 18px}
+  .icdrow{font-size:12.5px;padding:3px 0;border-bottom:1px dashed var(--line)}
+  .icdrow .c{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-weight:700;color:var(--aksen);margin-right:8px}
+  @media (max-width:640px){.icdout{grid-template-columns:1fr}}
   .foot{margin-top:14px;color:var(--muted);font-size:12px}
 </style>
 </head>
@@ -78,10 +84,16 @@
     <button class="btn primary" id="csv">Export CSV</button>
   </div>
   <div id="tbl"></div>
+  <div class="icdbox">
+    <div class="icdtitle">Kamus ICD-10 — cari kode / teks diagnosa (referensi koder)</div>
+    <input class="search" id="icdq" placeholder="ketik: katarak · K35 · hipertensi · fraktur humerus…">
+    <div id="icdout" class="icdout"></div>
+  </div>
   <div class="foot" id="foot" hidden></div>
 </main>
 
 <script src="lib/xlsx.full.min.js"></script>
+<script src="lib/icd10.js"></script>
 <script src="klaimguard-core.js"></script>
 <script>
 (function(){
@@ -148,7 +160,7 @@
     const labelCek = {dup:"SEP kosong/duplikat", tgl:"Tanggal anomali", tglkosong:"Tanggal kosong",
       inacbg:"Kode INACBG bermasalah", kelas:"Kelas vs jenis", nilai:"Nilai ≤ 0", topup:"Ada top-up",
       gagal:"Gagal grouping iDRG", satuDx:"Hanya 1 diagnosis", dx9:"Diagnosa utama .9",
-      sex:"Kode obstetri di laki-laki", umur:"Kode neonatal usia>1"};
+      sex:"Kode obstetri di laki-laki", umur:"Kode neonatal usia>1", invalid:"Kode perlu cek", under:"Potensi under-coding"};
     const ck = [];
     for (const [k,v] of Object.entries(s.checks)) if (v>0) ck.push("<span class='chip'>" + (labelCek[k]||k) + " <b>" + v + "</b></span>");
     checks.hidden = ck.length === 0;
@@ -207,6 +219,14 @@
     render();
   });
   q.addEventListener("input", render);
+
+  const icdq = $("#icdq"), icdout = $("#icdout");
+  icdq.addEventListener("input", () => {
+    const r = KG.cariICD(icdq.value);
+    icdout.innerHTML = r.length
+      ? r.map(x => "<div class='icdrow'><span class='c'>" + esc(x[0]) + "</span>" + esc(x[1]) + "</div>").join("")
+      : "<div class='icdrow' style='color:var(--muted)'>Tidak ada hasil.</div>";
+  });
 
   csvBtn.addEventListener("click", () => {
     if (!state) return;
