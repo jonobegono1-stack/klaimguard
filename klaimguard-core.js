@@ -52,6 +52,53 @@
     return isNaN(n) ? 0 : n;
   }
 
+  // ============ KAMUS ICD-10 ============
+  let ICD = null, ICD_PREFIX = null;
+  function initICD() {
+    if (ICD) return;
+    ICD = (typeof global.ICD10 === "object" && global.ICD10) ? global.ICD10 : {};
+    ICD_PREFIX = new Set();
+    for (const k in ICD) { if (k.length >= 3) ICD_PREFIX.add(k.slice(0, 3)); }
+  }
+  function icdInfo(code) {
+    code = String(code == null ? "" : code).trim().toUpperCase();
+    if (!code) return null;
+    if (!/^[A-Z]\d{2}(\.\d{1,2})?$/.test(code)) return { code, status: "format", desc: null };
+    if (ICD[code] !== undefined) return { code, status: "ok", desc: ICD[code] };
+    const p = code.slice(0, 3);
+    if (ICD[p] !== undefined) return { code, status: "sub", desc: ICD[p] };
+    if (ICD_PREFIX.has(p)) return { code, status: "sub", desc: null };
+    return { code, status: "unknown", desc: null };
+  }
+  function saranSpesifik(code) {
+    code = String(code == null ? "" : code).trim().toUpperCase();
+    if (code.length < 4) return [];
+    const p = code.slice(0, 3);
+    const out = [];
+    for (const k in ICD) {
+      if (k.startsWith(p) && k !== code && !/\.9$/.test(k)) out.push([k, ICD[k]]);
+    }
+    out.sort((a, b) => a[0].localeCompare(b[0]));
+    return out.slice(0, 6);
+  }
+  function cariICD(q) {
+    initICD();
+    q = String(q == null ? "" : q).trim();
+    if (!q) return [];
+    const ql = q.toLowerCase();
+    const out = [];
+    if (/^[A-Za-z]\d/.test(q)) {
+      const info = icdInfo(q);
+      if (info && info.desc) out.push([q.toUpperCase(), info.desc + (info.status === "sub" ? " (kategori " + q.slice(0, 3) + ")" : "")]);
+    }
+    for (const k in ICD) {
+      const d = ICD[k];
+      if (d && d.toLowerCase().includes(ql)) out.push([k, d]);
+      if (out.length >= 40) break;
+    }
+    return out.slice(0, 30);
+  }
+
   // ============ DETEKSI FORMAT ============
   function deteksiFormat(textOrAoA, namaFile) {
     const nama = (namaFile || "").toLowerCase();
@@ -152,6 +199,7 @@
         sep: sep,
         inacbg: inacbg,
         kelas: kelas,
+        sev: (inacbg.split("-")[1] || ""),
         jenis: kelas === "0" ? "RJ" : "RI",
         nama: get(parts, "NAMA_PASIEN"),
         rm: get(parts, "MRN"),
@@ -220,8 +268,9 @@
   }
 
   function cekMix(claims) {
+    initICD();
     const results = [];
-    const checks = { gagal: 0, satuDx: 0, dx9: 0, sex: 0, umur: 0 };
+    const checks = { gagal: 0, satuDx: 0, dx9: 0, sex: 0, umur: 0, invalid: 0, under: 0 };
     for (const c of claims) {
       const masalah = [];
       const add = (level, label) => masalah.push({ level, label });
@@ -234,7 +283,24 @@
       const ranap = /^I+$/.test(c.kelas);
       if (ranap && c.jmlDiag === 1) { add("kuning", "Hanya 1 diagnosis — cek komorbiditas"); checks.satuDx++; }
 
-      if (c.diagUtama && /\.9$/.test(c.diagUtama)) { add("kuning", "Diagnosa utama terlalu umum (" + c.diagUtama + ")"); checks.dx9++; }
+      if (c.diagUtama && /\.9$/.test(c.diagUtama)) {
+        const s = saranSpesifik(c.diagUtama);
+        const sS = s.length ? " → coba: " + s.map(x => x[0]).slice(0, 4).join(", ") : "";
+        add("kuning", "Diagnosa utama terlalu umum (" + c.diagUtama + ")" + sS);
+        checks.dx9++;
+      }
+
+      // validitas kode vs kamus ICD-10 (induk = fallback subdivisi valid)
+      for (const d of c.diag) {
+        const info = icdInfo(d);
+        if (info && info.status === "format") {
+          add("kuning", "Format kode " + d + " tidak standar — periksa");
+          checks.invalid++;
+        } else if (info && info.status === "unknown") {
+          add("kuning", "Kode " + d + " tidak ada di kamus lokal — verifikasi");
+          checks.invalid++;
+        }
+      }
 
       if (c.sex === "1" && c.diag.some(d => /^O/i.test(d))) {
         add("merah", "Kode obstetri (" + c.diag.filter(d => /^O/i.test(d))[0] + ") di pasien laki-laki");
@@ -244,6 +310,11 @@
       if (c.umur >= 1 && c.diag.some(d => /^P/i.test(d))) {
         add("kuning", "Kode neonatal (P) di pasien usia " + c.umur + " th");
         checks.umur++;
+      }
+
+      if (ranap && c.sev === "1" && c.jmlDiag === 1 && c.los >= 3) {
+        add("kuning", "Potensi under-coding: severity I + 1 diagnosis + LOS " + c.los + " hari");
+        checks.under++;
       }
 
       const level = masalah.some(x => x.level === "merah") ? "merah"
@@ -280,7 +351,7 @@
     return { format: "rekap", judul: p.judul, header: p.header, count: p.count, ...c };
   }
 
-  const KG = { VERSION: "0.1.0", parseTanggal, parseRekap, parseMix, cekRekap, cekMix, proses, tglStr };
+  const KG = { VERSION: "0.2.0", parseTanggal, parseRekap, parseMix, cekRekap, cekMix, proses, tglStr, cariICD, icdInfo, saranSpesifik };
 
   if (typeof module !== "undefined" && module.exports) module.exports = KG;
   global.KG = KG;
